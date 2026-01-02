@@ -7,6 +7,12 @@ pub struct Scanner {
     // Future: add specific engines here
 }
 
+impl Default for Scanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scanner {
     pub fn new() -> Self {
         Self {}
@@ -28,33 +34,66 @@ impl Scanner {
 
     pub fn scan_process(&self, process: &ProcessMetadata) -> Result<Vec<Finding>> {
         let regions = get_process_memory_map(process.pid)?;
-        let mut findings = Vec::new();
+        let mut raw_findings = Vec::new();
 
         // 1. Memory Region Analysis
-        findings.extend(crate::engines::memory_region::MemoryRegionEngine::analyze(
+        raw_findings.extend(crate::engines::memory_region::MemoryRegionEngine::analyze(
             process, &regions,
         ));
 
         // 2. PE Analysis
-        findings.extend(crate::engines::pe_analysis::PeAnalysisEngine::analyze(
+        raw_findings.extend(crate::engines::pe_analysis::PeAnalysisEngine::analyze(
             process, &regions,
         ));
 
         // 3. Shellcode Analysis
-        findings.extend(crate::engines::shellcode::ShellcodeEngine::analyze(
+        raw_findings.extend(crate::engines::shellcode::ShellcodeEngine::analyze(
             process, &regions,
         ));
 
         // 4. Hook Analysis
-        findings.extend(crate::engines::hooks::HookEngine::analyze(
+        raw_findings.extend(crate::engines::hooks::HookEngine::analyze(
             process, &regions,
         ));
 
         // 5. Thread Analysis
-        findings.extend(crate::engines::threads::ThreadEngine::analyze(
+        raw_findings.extend(crate::engines::threads::ThreadEngine::analyze(
             process, &regions,
         ));
 
-        Ok(findings)
+        // Correlation Logic: Group findings by region address
+        let mut correlated_findings = Vec::new();
+        let mut handled_indices = std::collections::HashSet::new();
+
+        for i in 0..raw_findings.len() {
+            if handled_indices.contains(&i) {
+                continue;
+            }
+
+            let mut base_finding = raw_findings[i].clone();
+            handled_indices.insert(i);
+
+            for (j, other_finding) in raw_findings.iter().enumerate().skip(i + 1) {
+                if handled_indices.contains(&j) {
+                    continue;
+                }
+
+                if let (Some(r1), Some(r2)) = (&base_finding.region, &other_finding.region) {
+                    if r1.base_address == r2.base_address {
+                        // Strengthen confidence score
+                        base_finding.confidence =
+                            base_finding.confidence.saturating_add(15).min(100);
+                        base_finding.explanation.push_str(&format!(
+                            "\n[Correlation] Also flagged by {} as {:?}",
+                            raw_findings[j].engine_name, raw_findings[j].technique
+                        ));
+                        handled_indices.insert(j);
+                    }
+                }
+            }
+            correlated_findings.push(base_finding);
+        }
+
+        Ok(correlated_findings)
     }
 }

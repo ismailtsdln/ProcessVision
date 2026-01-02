@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use indicatif::{ProgressBar, ProgressStyle};
 use processvision::core::scanner::Scanner;
 
 #[derive(Parser)]
@@ -13,9 +14,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Scan all running processes
-    ScanAll,
+    ScanAll {
+        /// Filter by process name
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Filter findings by minimum confidence (0-100)
+        #[arg(short, long, default_value_t = 0)]
+        min_confidence: u8,
+    },
     /// Scan a specific process by PID
-    ScanPid { pid: u32 },
+    ScanPid {
+        pid: u32,
+        /// Filter findings by minimum confidence (0-100)
+        #[arg(short, long, default_value_t = 0)]
+        min_confidence: u8,
+    },
 }
 
 fn main() {
@@ -23,23 +36,58 @@ fn main() {
     let scanner = Scanner::new();
 
     match cli.command {
-        Commands::ScanAll => {
+        Commands::ScanAll {
+            name,
+            min_confidence,
+        } => {
             println!("{}", "Starting full system memory scan...".bold().cyan());
-            match scanner.scan_all() {
-                Ok(findings) => print_findings(findings),
+
+            match processvision::core::process_enum::enumerate_processes() {
+                Ok(mut procs) => {
+                    if let Some(n) = name {
+                        procs.retain(|p| p.name.to_lowercase().contains(&n.to_lowercase()));
+                    }
+
+                    let pb = ProgressBar::new(procs.len() as u64);
+                    pb.set_style(ProgressStyle::default_bar()
+                        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                        .unwrap()
+                        .progress_chars("#>-"));
+
+                    let mut all_findings = Vec::new();
+                    for proc in procs {
+                        if let Ok(findings) = scanner.scan_process(&proc) {
+                            all_findings.extend(
+                                findings
+                                    .into_iter()
+                                    .filter(|f| f.confidence >= min_confidence),
+                            );
+                        }
+                        pb.inc(1);
+                    }
+                    pb.finish_with_message("Scan complete");
+                    println!();
+                    print_findings(all_findings);
+                }
                 Err(e) => eprintln!("{}: {}", "Error".red().bold(), e),
             }
         }
-        Commands::ScanPid { pid } => {
+        Commands::ScanPid {
+            pid,
+            min_confidence,
+        } => {
             println!("{} PID: {}", "Scanning process".bold().cyan(), pid);
-            // For now, scan_process needs a ProcessMetadata which requires name, etc.
-            // In a real implementation we'd look it up.
-            // Let's just wrap it for this demonstration.
             match processvision::core::process_enum::enumerate_processes() {
                 Ok(procs) => {
                     if let Some(proc) = procs.iter().find(|p| p.pid == pid) {
                         match scanner.scan_process(proc) {
-                            Ok(findings) => print_findings(findings),
+                            Ok(findings) => {
+                                let filtered: Vec<_> = findings
+                                    .into_iter()
+                                    .filter(|f| f.confidence >= min_confidence)
+                                    .collect();
+                                print_findings(filtered);
+                            }
                             Err(e) => eprintln!("{}: {}", "Error".red().bold(), e),
                         }
                     } else {
@@ -54,7 +102,10 @@ fn main() {
 
 fn print_findings(findings: Vec<processvision::core::findings::Finding>) {
     if findings.is_empty() {
-        println!("{}", "No threats detected.".green().bold());
+        println!(
+            "{}",
+            "No threats detected matching criteria.".green().bold()
+        );
         return;
     }
 

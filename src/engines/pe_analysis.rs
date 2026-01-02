@@ -18,13 +18,14 @@ impl PeAnalysisEngine {
 
             // Read first 1024 bytes to check for PE header
             let mut buffer = vec![0u8; 1024];
-            if Self::read_process_memory(process.pid, region.base_address, &mut buffer).is_ok() {
-                if buffer.starts_with(b"MZ") {
-                    // Possible PE header
-                    if let Ok(_pe) = PE::parse(&buffer) {
-                        // If it's MEM_PRIVATE, it's highly suspicious (Manual Mapping / Reflective Injection)
-                        if region.region_type == windows_sys::Win32::System::Memory::MEM_PRIVATE {
-                            findings.push(Finding {
+            if Self::read_process_memory(process.pid, region.base_address, &mut buffer).is_ok()
+                && buffer.starts_with(b"MZ")
+            {
+                // Possible PE header
+                if let Ok(_pe) = PE::parse(&buffer) {
+                    // If it's MEM_PRIVATE, it's highly suspicious (Manual Mapping / Reflective Injection)
+                    if region.region_type == windows_sys::Win32::System::Memory::MEM_PRIVATE {
+                        findings.push(Finding {
                                 process: process.clone(),
                                 region: Some(region.clone()),
                                 engine_name: "PeAnalysisEngine".to_string(),
@@ -36,7 +37,6 @@ impl PeAnalysisEngine {
                                 ),
                                 recommended_action: "Examine the exports and strings of this in-memory DLL to determine its purpose.".to_string(),
                             });
-                        }
                     }
                 }
             }
