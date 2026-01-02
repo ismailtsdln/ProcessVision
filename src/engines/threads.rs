@@ -1,4 +1,5 @@
-use crate::core::findings::{Finding, MemoryRegionInfo, ProcessMetadata};
+use crate::core::findings::{DetectionTechnique, Finding, MemoryRegionInfo, ProcessMetadata};
+use crate::core::process_handle::ProcessHandle;
 use std::mem::size_of;
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
@@ -6,8 +7,12 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
 pub struct ThreadEngine;
 
 impl ThreadEngine {
-    pub fn analyze(process: &ProcessMetadata, regions: &[MemoryRegionInfo]) -> Vec<Finding> {
-        let findings = Vec::new();
+    pub fn analyze(
+        process: &ProcessMetadata,
+        _handle: &ProcessHandle,
+        regions: &[MemoryRegionInfo],
+    ) -> Vec<Finding> {
+        let mut findings = Vec::new();
 
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -21,11 +26,17 @@ impl ThreadEngine {
             if Thread32First(snapshot, &mut entry) != 0 {
                 loop {
                     if entry.th32OwnerProcessID == process.pid {
-                        // Heuristic logic would go here.
-                        // For example: Checking if entry point is in any of the passed `regions`
-                        // that were flagged as executable but private.
-                        for _region in regions {
-                            // Logic placeholder
+                        // In a real scenario, we'd use NtQueryInformationThread to get entry point.
+                        // Heuristic: If we have many threads starting in private executable regions.
+
+                        for region in regions {
+                            // If a region is MEM_PRIVATE and Executable, and we have many threads,
+                            // it increases the suspicion overall for that region.
+                            if region.region_type == windows_sys::Win32::System::Memory::MEM_PRIVATE
+                                && (region.protection & 0xF0) != 0
+                            {
+                                // (Logic to correlate threads with this region would go here)
+                            }
                         }
                     }
 
@@ -35,6 +46,20 @@ impl ThreadEngine {
                 }
             }
             CloseHandle(snapshot);
+        }
+
+        // Add a general detection if process is highly suspicious (APC injection indicators etc)
+        // For demonstration:
+        if !findings.is_empty() {
+            findings.push(Finding {
+                process: process.clone(),
+                region: None,
+                engine_name: "ThreadEngine".to_string(),
+                technique: DetectionTechnique::SuspiciousThread,
+                confidence: 40,
+                explanation: "Multiple suspicious thread indicators correlated with private executable memory.".to_string(),
+                recommended_action: "Examine thread call stacks for evidence of shellcode execution.".to_string(),
+            });
         }
 
         findings

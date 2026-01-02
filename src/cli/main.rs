@@ -5,7 +5,7 @@ use processvision::core::scanner::Scanner;
 
 #[derive(Parser)]
 #[command(name = "processvision")]
-#[command(about = "Advanced Process Memory Threat Detection", long_about = None)]
+#[command(about = "Next-Generation Process Memory Forensic Tool", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -13,7 +13,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Scan all running processes
+    /// Scan all running processes with advanced heuristics
     ScanAll {
         /// Filter by process name
         #[arg(short, long)]
@@ -22,7 +22,7 @@ enum Commands {
         #[arg(short, long, default_value_t = 0)]
         min_confidence: u8,
     },
-    /// Scan a specific process by PID
+    /// Deep scan a specific process by PID
     ScanPid {
         pid: u32,
         /// Filter findings by minimum confidence (0-100)
@@ -31,16 +31,40 @@ enum Commands {
     },
 }
 
+fn print_banner() {
+    let banner = r#"
+    ____                             _     _             
+   |  _ \ _ __ ___   ___ ___  ___ ___| |   (_) ___  _ __  
+   | |_) | '__/ _ \ / __/ _ \/ __/ __| \   | |/ _ \| '_ \ 
+   |  __/| | | (_) | (_|  __/\__ \__ \ |___| | (_) | | | |
+   |_|   |_|  \___/ \___\___||___/___/_____|_|\___/|_| |_|
+    "#;
+    println!("{}", banner.bright_cyan().bold());
+    println!(
+        "    {} v{} - {} by Ismail Tasdelen",
+        "ProcessVision".white().bold(),
+        env!("CARGO_PKG_VERSION").green(),
+        "Memory Forensic Scanner".yellow().italic()
+    );
+    println!("{}\n", "=".repeat(70).bright_black());
+}
+
 fn main() {
     let cli = Cli::parse();
     let scanner = Scanner::new();
+
+    print_banner();
 
     match cli.command {
         Commands::ScanAll {
             name,
             min_confidence,
         } => {
-            println!("{}", "Starting full system memory scan...".bold().cyan());
+            println!(
+                " {} {}",
+                "▶".bright_blue(),
+                "Initializing system-wide memory scan...".bold()
+            );
 
             match processvision::core::process_enum::enumerate_processes() {
                 Ok(mut procs) => {
@@ -50,12 +74,13 @@ fn main() {
 
                     let pb = ProgressBar::new(procs.len() as u64);
                     pb.set_style(ProgressStyle::default_bar()
-                        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
                         .unwrap()
                         .progress_chars("#>-"));
 
                     let mut all_findings = Vec::new();
                     for proc in procs {
+                        pb.set_message(format!("Scanning {} (PID: {})", proc.name, proc.pid));
                         if let Ok(findings) = scanner.scan_process(&proc) {
                             all_findings.extend(
                                 findings
@@ -65,8 +90,8 @@ fn main() {
                         }
                         pb.inc(1);
                     }
-                    pb.finish_with_message("Scan complete");
-                    println!();
+                    pb.finish_with_message("Scan Completed");
+                    println!("\n{}\n", "=".repeat(70).bright_black());
                     print_findings(all_findings);
                 }
                 Err(e) => eprintln!("{}: {}", "Error".red().bold(), e),
@@ -76,7 +101,12 @@ fn main() {
             pid,
             min_confidence,
         } => {
-            println!("{} PID: {}", "Scanning process".bold().cyan(), pid);
+            println!(
+                " {} {} PID: {}",
+                "▶".bright_blue(),
+                "Deep scanning process".bold(),
+                pid.to_string().bright_yellow()
+            );
             match processvision::core::process_enum::enumerate_processes() {
                 Ok(procs) => {
                     if let Some(proc) = procs.iter().find(|p| p.pid == pid) {
@@ -103,41 +133,62 @@ fn main() {
 fn print_findings(findings: Vec<processvision::core::findings::Finding>) {
     if findings.is_empty() {
         println!(
-            "{}",
-            "No threats detected matching criteria.".green().bold()
+            " {} {}",
+            "✔".bright_green().bold(),
+            "No anomalies detected matching the criteria."
+                .green()
+                .bold()
         );
         return;
     }
 
     println!(
-        "{} {} finding(s) detected!\n",
-        "ALERT:".red().bold(),
-        findings.len()
+        " {} {} suspicious indicator(s) identified!\n",
+        "⚠".bright_red().bold(),
+        findings.len().to_string().bright_red().bold()
     );
 
     for finding in findings {
-        println!("{}", "=".repeat(60).yellow());
+        let confidence_color = if finding.confidence > 80 {
+            finding.confidence.to_string().red().bold()
+        } else if finding.confidence > 50 {
+            finding.confidence.to_string().yellow().bold()
+        } else {
+            finding.confidence.to_string().cyan()
+        };
+
         println!(
-            "{}: {} (PID: {})",
+            "┌── {} {}",
+            "[FINDING]".bright_red().bold(),
+            finding.engine_name.bright_black()
+        );
+        println!(
+            "│  {:<15}: {} (PID: {})",
             "Process".bold(),
-            finding.process.name,
+            finding.process.name.bright_white(),
             finding.process.pid
         );
-        println!("{}: {:?}", "Technique".bold(), finding.technique);
-        println!("{}: {}/100", "Confidence".bold(), finding.confidence);
-        println!("{}: {}", "Engine".bold(), finding.engine_name);
+        println!("│  {:<15}: {:?}", "Technique".bold(), finding.technique);
+        println!("│  {:<15}: {}%", "Confidence".bold(), confidence_color);
+
         if let Some(region) = &finding.region {
             println!(
-                "{}: 0x{:X} (Size: {} bytes)",
+                "│  {:<15}: 0x{:X} (Size: {} KB)",
                 "Region".bold(),
                 region.base_address,
-                region.size
+                region.size / 1024
             );
         }
-        println!("\n{}:", "Explanation".bold());
-        println!("{}", finding.explanation);
-        println!("\n{}:", "Action".bold());
-        println!("{}", finding.recommended_action);
-        println!("{}\n", "=".repeat(60).yellow());
+
+        println!("│");
+        println!("│  {}:", "Explanation".bold());
+        for line in finding.explanation.lines() {
+            println!("│    {}", line.dimmed());
+        }
+
+        println!("│");
+        println!("│  {}:", "Action".bold());
+        println!("│    {}", finding.recommended_action.bright_blue());
+        println!("└──{}\n", "─".repeat(57).bright_black());
     }
 }

@@ -1,78 +1,80 @@
-# 🚀 ProcessVision – Advanced Process Memory Threat Detection
+# ProcessVision 🛡️
 
-ProcessVision is a next-generation process memory inspection and threat detection tool written in Rust. It is designed for blue teams, incident responders, and malware analysts to detect sophisticated in-memory threats without relying on signatures.
+**ProcessVision** is a next-generation, signature-less process memory inspection and threat detection tool written in Rust. It is designed for blue teams, incident responders, and malware analysts to detect sophisticated in-memory threats.
 
-## 🎯 What is ProcessVision?
+![ProcessVision Banner](https://img.shields.io/badge/Status-Active-brightgreen)
+![Rust](https://img.shields.io/badge/Language-Rust-orange)
+![License](https://img.shields.io/badge/License-MIT-blue)
 
-ProcessVision performs deep structural and behavioral analysis of live processes to identify malicious activity such as process hollowing, manual mapping, and shellcode injection.
+## ✨ Features
 
-## 🛡️ Threats it Detects
-
-- **Process Hollowing & RunPE**: Detects mismatches between disk images and in-memory execution.
-- **Manual Mapping / Reflective Injection**: Identifies PE headers in private, unbacked memory regions.
-- **Shellcode Injection**: Uses heuristic analysis and entropy checks to find suspicious executable code.
-- **Userland API Hooking**: Detects IAT/EAT hooks and inline trampolines (Experimental).
-- **Suspicious Thread Behavior**: Monitors threads starting from non-image memory or unusual entry points.
-
-## 🧠 How It Works
-
-ProcessVision operates by:
-
-1. **Enumerating** all active processes and their memory maps.
-2. **Normalizing** memory metadata (protection, state, type).
-3. **Analyzing** regions using specialized detection engines:
-   - **Memory Region Engine**: Checks for RWX and MEM_PRIVATE executable pages.
-   - **PE Analysis Engine**: Validates PE structures in memory.
-   - **Shellcode Engine**: Performs Shannon entropy calculations.
-4. **Correlating** findings into a human-readable report with confidence scores.
-
-## 🏗️ Architecture
-
-```mermaid
-graph TD
-    CLI[CLI / Interface] --> Scanner[Scanner Core]
-    Scanner --> PE[PE Analysis Engine]
-    Scanner --> MR[Memory Region Engine]
-    Scanner --> SC[Shellcode Engine]
-    Scanner --> HK[Hook Engine]
-    Scanner --> TH[Thread Engine]
-    Scanner --> Agg[Findings Aggregator]
-    Agg --> Output[CLI / JSON Output]
-```
+- **Advanced Memory Analysis**: Detects RWX regions, W^X violations, and executable memory in private/heap regions.
+- **PE Integrity Engine**: Scans for manually mapped PEs, suspicious section names (packers), and malformed headers (anti-forensics).
+- **Shellcode Heuristics**: Detects high-entropy payloads and common instruction patterns (PEB access, direct syscalls).
+- **Hook & Integrity Detection**: Identifies potential API redirections and IAT/EAT hooking via indirect jump patterns.
+- **Detection Correlation**: Automatically strengthens confidence scores when multiple engines flag the same region.
+- **Modern CLI**: Feature-rich terminal interface with progress indicators, colored finding cards, and filtered scan modes.
 
 ## 🚀 Installation
 
-Ensure you have Rust installed.
+### Prerequisites
 
-```bash
+- **OS**: Windows (Targeting WinAPI)
+- **Rust**: Latest stable toolchain
+
+### Build from source
+
+```powershell
 git clone https://github.com/ismailtsdln/ProcessVision.git
 cd ProcessVision
 cargo build --release
 ```
 
-## 📖 Usage Examples
+The binary will be located at `./target/release/processvision.exe`.
+
+## 🛠️ Usage
 
 ### Scan all processes
 
-```bash
+```powershell
 processvision scan-all
 ```
 
-### Scan a specific PID
+### Scan with filters (Name & Confidence)
 
-```bash
+```powershell
+processvision scan-all --name chrome --min-confidence 70
+```
+
+### Deep scan a specific process
+
+```powershell
 processvision scan-pid 1234
 ```
 
-## 🛠️ Security & Legal Notice
+## 🔍 Detection Engines
 
-ProcessVision is a defensive tool. It does not modify target processes by default.
-**Disclaimer**: This tool is for educational and professional security research only. Unauthorized use against systems you do not own is illegal.
+| Engine | Technique | Focus |
+| :--- | :--- | :--- |
+| **MemoryRegion** | Unbacked Executable Memory | RWX, W^X violations, Guard pages |
+| **PeAnalysis** | Manual Mapping / Hollowing | Section audit, Header integrity |
+| **Shellcode** | Shellcode Heuristics | High entropy, Syscall stubs, PEB access |
+| **HookEngine** | API/IAT Hooking | Indirect jumps, inline hooks |
+| **ThreadEngine** | Suspicious Execution | Private execution entry points |
+
+## 🛡️ Safety & Reliability
+
+- **Non-Destructive**: ProcessVision never modifies the target process. It only queries and reads memory.
+- **Rust Powered**: Leverage's Rust's memory safety to avoid common security pitfalls.
+- **Structured Errors**: Robust handling of UAC (Access Denied) and protected process errors.
 
 ## 🤝 Contribution
 
-Contributions are welcome! Please feel free to submit a Pull Request or open an issue.
+Contributions are welcome! If you have ideas for new detection engines or UI improvements, please open an issue or submit a pull request.
+
+## ⚖️ License
+
+Distributed under the MIT License. See `LICENSE` for more information.
 
 ---
-**Author**: Ismail Tasdelen
-**License**: MIT
+**Created by Ismail Tasdelen**

@@ -1,80 +1,77 @@
-use crate::core::errors::Result;
 use crate::core::findings::{DetectionTechnique, Finding, MemoryRegionInfo, ProcessMetadata};
+use crate::core::process_handle::ProcessHandle;
 use entropy::shannon_entropy;
-use windows_sys::Win32::System::Diagnostics::Debug::*;
-use windows_sys::Win32::System::Threading::*;
 
 pub struct ShellcodeEngine;
 
 impl ShellcodeEngine {
-    pub fn analyze(process: &ProcessMetadata, regions: &[MemoryRegionInfo]) -> Vec<Finding> {
+    pub fn analyze(
+        process: &ProcessMetadata,
+        handle: &ProcessHandle,
+        regions: &[MemoryRegionInfo],
+    ) -> Vec<Finding> {
         let mut findings = Vec::new();
 
+        // Common shellcode/malware byte patterns
+        let patterns = [
+            (
+                &[0x64, 0xA1, 0x30, 0x00, 0x00, 0x00][..],
+                "PEB Access (FS:[30h])",
+            ), // mov eax, fs:[30h]
+            (
+                &[0x65, 0x48, 0x8B, 0x04, 0x25, 0x60][..],
+                "PEB Access (GS:[60h])",
+            ), // mov rax, gs:[60h] (x64)
+            (&[0xEB, 0xFE][..], "Infinite Loop / Spinlock Stub"), // jmp $
+            (&[0xFF, 0xD0][..], "Indirect Call (Call EAX/RAX)"),
+            (&[0x0F, 0x05][..], "Direct Syscall Instruction (x64)"),
+        ];
+
         for region in regions {
-            // Only scan executable regions
             if (region.protection & 0xF0) != 0 {
-                // Simple check for execute bits (PAGE_EXECUTE_*)
-                if region.size < 512 {
-                    continue;
-                }
+                let scan_size = region.size.min(16384);
+                let mut buffer = vec![0u8; scan_size];
 
-                let mut buffer = vec![0u8; region.size.min(4096)];
-                if Self::read_process_memory(process.pid, region.base_address, &mut buffer).is_ok()
-                {
+                if handle.read_memory(region.base_address, &mut buffer).is_ok() {
+                    // 1. High Entropy Check
                     let ent = shannon_entropy(&buffer);
-
-                    // High entropy in executable memory is very suspicious (packed/encrypted shellcode)
-                    if ent > 6.5 {
+                    if ent > 6.8 {
                         findings.push(Finding {
                             process: process.clone(),
                             region: Some(region.clone()),
                             engine_name: "ShellcodeEngine".to_string(),
                             technique: DetectionTechnique::ShellcodeInjection,
-                            confidence: 75,
+                            confidence: 80,
                             explanation: format!(
-                                "High entropy ({:.2}) detected in executable region at 0x{:X}. This suggests packed or encrypted shellcode.",
+                                "Critical entropy ({:.2}) detected at 0x{:X}. High probability of encrypted payload.",
                                 ent, region.base_address
                             ),
-                            recommended_action: "Examine the region for common shellcode stubs (e.g., egg hunters or decoders).".to_string(),
+                            recommended_action: "Dump region and look for decoders.".to_string(),
                         });
+                    }
+
+                    // 2. Pattern Matching (Heuristic Signatures)
+                    for (pattern, desc) in &patterns {
+                        if let Some(pos) = buffer.windows(pattern.len()).position(|w| w == *pattern)
+                        {
+                            findings.push(Finding {
+                                process: process.clone(),
+                                region: Some(region.clone()),
+                                engine_name: "ShellcodeEngine".to_string(),
+                                technique: DetectionTechnique::ShellcodeInjection,
+                                confidence: 70,
+                                explanation: format!(
+                                    "Suspicious instruction pattern '{}' found at offset 0x{:X} within region 0x{:X}.",
+                                    desc, pos, region.base_address
+                                ),
+                                recommended_action: "Perform behavioral analysis to see if this code resolves system APIs.".to_string(),
+                            });
+                        }
                     }
                 }
             }
         }
 
         findings
-    }
-
-    fn read_process_memory(pid: u32, address: usize, buffer: &mut [u8]) -> Result<()> {
-        unsafe {
-            let handle = OpenProcess(PROCESS_VM_READ, 0, pid);
-            if handle == 0 {
-                return Err(crate::core::errors::ProcessVisionError::ProcessOpenError(
-                    pid,
-                    windows_sys::Win32::Foundation::GetLastError(),
-                ));
-            }
-
-            let mut bytes_read = 0;
-            let success = ReadProcessMemory(
-                handle,
-                address as *const _,
-                buffer.as_mut_ptr() as *mut _,
-                buffer.len(),
-                &mut bytes_read,
-            );
-
-            windows_sys::Win32::Foundation::CloseHandle(handle);
-
-            if success != 0 {
-                Ok(())
-            } else {
-                Err(crate::core::errors::ProcessVisionError::MemoryReadError(
-                    pid,
-                    address,
-                    windows_sys::Win32::Foundation::GetLastError(),
-                ))
-            }
-        }
     }
 }

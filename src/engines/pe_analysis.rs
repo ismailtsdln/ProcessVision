@@ -1,80 +1,88 @@
-use crate::core::errors::Result;
 use crate::core::findings::{DetectionTechnique, Finding, MemoryRegionInfo, ProcessMetadata};
+use crate::core::process_handle::ProcessHandle;
 use goblin::pe::PE;
-use windows_sys::Win32::System::Diagnostics::Debug::*;
-use windows_sys::Win32::System::Threading::*;
 
 pub struct PeAnalysisEngine;
 
 impl PeAnalysisEngine {
-    pub fn analyze(process: &ProcessMetadata, regions: &[MemoryRegionInfo]) -> Vec<Finding> {
+    pub fn analyze(
+        process: &ProcessMetadata,
+        handle: &ProcessHandle,
+        regions: &[MemoryRegionInfo],
+    ) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        // 1. Look for PE headers in memory regions that are PRIVATE or unusual
         for region in regions {
-            if region.size < 1024 {
+            if region.size < 4096 {
                 continue;
-            } // Too small for PE header
+            }
 
-            // Read first 1024 bytes to check for PE header
-            let mut buffer = vec![0u8; 1024];
-            if Self::read_process_memory(process.pid, region.base_address, &mut buffer).is_ok()
+            let mut buffer = vec![0u8; 4096];
+            if handle.read_memory(region.base_address, &mut buffer).is_ok()
                 && buffer.starts_with(b"MZ")
             {
-                // Possible PE header
-                if let Ok(_pe) = PE::parse(&buffer) {
-                    // If it's MEM_PRIVATE, it's highly suspicious (Manual Mapping / Reflective Injection)
+                if let Ok(pe) = PE::parse(&buffer) {
+                    // 1. Detect manual mapping in private memory
                     if region.region_type == windows_sys::Win32::System::Memory::MEM_PRIVATE {
                         findings.push(Finding {
+                            process: process.clone(),
+                            region: Some(region.clone()),
+                            engine_name: "PeAnalysisEngine".to_string(),
+                            technique: DetectionTechnique::ManualMapping,
+                            confidence: 95,
+                            explanation: format!(
+                                "Manually mapped PE detected in private memory at 0x{:X}.",
+                                region.base_address
+                            ),
+                            recommended_action: "Inspect the PE exports and strings.".to_string(),
+                        });
+                    }
+
+                    // 2. Detect Suspicious Section Names (e.g., UPX, .text1, etc.)
+                    for section in &pe.sections {
+                        let name = String::from_utf8_lossy(&section.name)
+                            .trim_matches(char::from(0))
+                            .to_string();
+                        if ["upx", "pack", ".text1", ".pdata"]
+                            .iter()
+                            .any(|&s| name.to_lowercase().contains(s))
+                        {
+                            findings.push(Finding {
                                 process: process.clone(),
                                 region: Some(region.clone()),
                                 engine_name: "PeAnalysisEngine".to_string(),
-                                technique: DetectionTechnique::ManualMapping,
-                                confidence: 95,
+                                technique: DetectionTechnique::CodeIntegrityMismatch,
+                                confidence: 50,
                                 explanation: format!(
-                                    "Manually mapped PE detected in private memory at 0x{:X}. Valid MZ/PE headers found in a region not backed by a disk image.",
-                                    region.base_address
+                                    "Suspicious section name '{}' detected in PE at 0x{:X}.",
+                                    name, region.base_address
                                 ),
-                                recommended_action: "Examine the exports and strings of this in-memory DLL to determine its purpose.".to_string(),
+                                recommended_action:
+                                    "Verify if the file on disk uses the same packer.".to_string(),
                             });
+                        }
                     }
+
+                    // 3. Detect Section Overlap or Discrepancy
+                    // If VirtualSize is much larger than SizeOfRawData in memory, it might be unpacked.
+                } else {
+                    // 4. MZ present but PE header invalid/malformed (Anti-forensics)
+                    findings.push(Finding {
+                            process: process.clone(),
+                            region: Some(region.clone()),
+                            engine_name: "PeAnalysisEngine".to_string(),
+                            technique: DetectionTechnique::ProcessHollowing,
+                            confidence: 40,
+                            explanation: format!(
+                                "MZ header found at 0x{:X} but subsequent PE header is malformed or wiped. Common anti-analysis technique.",
+                                region.base_address
+                            ),
+                            recommended_action: "Examine the region for shellcode that may have overwritten the header.".to_string(),
+                        });
                 }
             }
         }
 
         findings
-    }
-
-    fn read_process_memory(pid: u32, address: usize, buffer: &mut [u8]) -> Result<()> {
-        unsafe {
-            let handle = OpenProcess(PROCESS_VM_READ, 0, pid);
-            if handle == 0 {
-                return Err(crate::core::errors::ProcessVisionError::ProcessOpenError(
-                    pid,
-                    windows_sys::Win32::Foundation::GetLastError(),
-                ));
-            }
-
-            let mut bytes_read = 0;
-            let success = ReadProcessMemory(
-                handle,
-                address as *const _,
-                buffer.as_mut_ptr() as *mut _,
-                buffer.len(),
-                &mut bytes_read,
-            );
-
-            windows_sys::Win32::Foundation::CloseHandle(handle);
-
-            if success != 0 {
-                Ok(())
-            } else {
-                Err(crate::core::errors::ProcessVisionError::MemoryReadError(
-                    pid,
-                    address,
-                    windows_sys::Win32::Foundation::GetLastError(),
-                ))
-            }
-        }
     }
 }

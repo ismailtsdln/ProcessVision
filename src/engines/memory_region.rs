@@ -15,36 +15,63 @@ impl MemoryRegionEngine {
                     region: Some(region.clone()),
                     engine_name: "MemoryRegionEngine".to_string(),
                     technique: DetectionTechnique::UnbackedExecutableMemory,
-                    confidence: 80,
+                    confidence: 85,
                     explanation: format!(
-                        "RWX (Read-Write-Execute) memory region detected at 0x{:X}. This is a common indicator of shellcode or self-modifying code.",
+                        "RWX region detected at 0x{:X}. This violates W^X principles and is often used for staging shellcode.",
                         region.base_address
                     ),
-                    recommended_action: "Inspect the memory content for shellcode or injected PE files.".to_string(),
+                    recommended_action: "Analyze memory content for executable code.".to_string(),
                 });
             }
 
-            // 2. Detect executable memory that is PRIVATE (not mapped from file)
-            // Note: In Windows, Type MEM_PRIVATE usually indicates it's not a mapped file.
-            if (region.protection
-                & (PAGE_EXECUTE
-                    | PAGE_EXECUTE_READ
-                    | PAGE_EXECUTE_READWRITE
-                    | PAGE_EXECUTE_WRITECOPY))
+            // 2. Executable memory in Private/Typical Heap/Stack regions
+            if (region.protection & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))
                 != 0
                 && region.region_type == MEM_PRIVATE
             {
+                findings.push(Finding {
+                        process: process.clone(),
+                        region: Some(region.clone()),
+                        engine_name: "MemoryRegionEngine".to_string(),
+                        technique: DetectionTechnique::UnbackedExecutableMemory,
+                        confidence: 75,
+                        explanation: format!(
+                            "File-unbacked executable memory (MEM_PRIVATE) detected at 0x{:X}. Potential manual mapping or reflective injection.",
+                            region.base_address
+                        ),
+                        recommended_action: "Check for PE headers or shellcode stubs in this region.".to_string(),
+                    });
+            }
+
+            // 3. Detect "Executable WriteCopy" - unusual for legitimate code
+            if (region.protection & PAGE_EXECUTE_WRITECOPY) != 0 {
                 findings.push(Finding {
                     process: process.clone(),
                     region: Some(region.clone()),
                     engine_name: "MemoryRegionEngine".to_string(),
                     technique: DetectionTechnique::UnbackedExecutableMemory,
-                    confidence: 70,
+                    confidence: 60,
                     explanation: format!(
-                        "Executable memory at 0x{:X} is not backed by a file (MEM_PRIVATE). This often indicates manual mapping or reflective injection.",
+                        "PAGE_EXECUTE_WRITECOPY protection at 0x{:X}. Often used during the final stages of reflective loading.",
                         region.base_address
                     ),
-                    recommended_action: "Correlate with PE analysis to see if a valid PE structure exists in this region.".to_string(),
+                    recommended_action: "Monitor this region for further protection changes.".to_string(),
+                });
+            }
+
+            // 4. Executable memory with Guard pages - suspicious behavior
+            if (region.protection & PAGE_GUARD) != 0 && (region.protection & 0xF0) != 0 {
+                findings.push(Finding {
+                    process: process.clone(),
+                    region: Some(region.clone()),
+                    engine_name: "MemoryRegionEngine".to_string(),
+                    technique: DetectionTechnique::UnbackedExecutableMemory,
+                    confidence: 90,
+                    explanation: format!(
+                        "Executable memory with PAGE_GUARD detected at 0x{:X}. This is a classic anti-debugging or anti-dumping technique.",
+                        region.base_address
+                    ),
+                    recommended_action: "Attempt memory dump with care, as it may trigger debugger traps.".to_string(),
                 });
             }
         }

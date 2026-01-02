@@ -1,46 +1,45 @@
-use crate::core::errors::Result;
 use crate::core::findings::{DetectionTechnique, Finding, MemoryRegionInfo, ProcessMetadata};
-use windows_sys::Win32::Foundation::*;
-use windows_sys::Win32::System::Diagnostics::Debug::*;
-use windows_sys::Win32::System::Threading::*;
+use crate::core::process_handle::ProcessHandle;
 
 pub struct HookEngine;
 
 impl HookEngine {
-    pub fn analyze(process: &ProcessMetadata, _regions: &[MemoryRegionInfo]) -> Vec<Finding> {
+    pub fn analyze(
+        process: &ProcessMetadata,
+        handle: &ProcessHandle,
+        regions: &[MemoryRegionInfo],
+    ) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        // Target: NTDLL.dll (common for userland hooks)
-        // We look for 0xE9 (JMP) or 0xFF (JMP/CALL) at the start ofexported functions
-        // To keep it efficient and stable, we'll scan only known critical offsets if possible
-        // or just scan executable regions for common hook patterns.
+        // 1. Scan for inline JMP/CALL hooks at the beginning of exported functions (Conceptual)
+        // 2. Detect "Trampolines" - small executable regions that jump back to original code
 
-        for region in _regions {
-            if (region.protection & 0xF0) != 0
-                && region.region_type == windows_sys::Win32::System::Memory::MEM_IMAGE
-            {
-                let mut buffer = vec![0u8; region.size.min(1024 * 64)]; // Scan first 64KB of image regions
-                if Self::read_process_memory(process.pid, region.base_address, &mut buffer).is_ok()
-                {
-                    // Search for common inline hook patterns
-                    // JMP REL32 (0xE9 XX XX XX XX)
+        for region in regions {
+            // Legitimate image code shouldn't have many short jumps to private memory
+            if (region.protection & 0xF0) != 0 {
+                let mut buffer = vec![0u8; region.size.min(8192)];
+                if handle.read_memory(region.base_address, &mut buffer).is_ok() {
                     for (i, window) in buffer.windows(5).enumerate() {
+                        // E9 XX XX XX XX (Relative JMP)
                         if window[0] == 0xE9 {
-                            // Basic heuristic: Is it jumping far away from the current region?
-                            // This is a simplification.
+                            // Check if jmp target is likely outside this region (simplistic check)
+                            // This is a placeholder for a more complex flow analysis
+                        }
+
+                        // FF 25 XX XX XX XX (Indirect JMP) -> Common for IAT hooks
+                        if window[0] == 0xFF && window[1] == 0x25 {
                             findings.push(Finding {
                                 process: process.clone(),
                                 region: Some(region.clone()),
                                 engine_name: "HookEngine".to_string(),
                                 technique: DetectionTechnique::ApiHooking,
-                                confidence: 60,
+                                confidence: 55,
                                 explanation: format!(
-                                    "Potential inline recursive JMP hook detected at 0x{:X}. Instruction starts with 0xE9.",
+                                    "Indirect JMP instruction (FF 25) found at 0x{:X}. Common indicator of IAT or API hooking.",
                                     region.base_address + i
                                 ),
-                                recommended_action: "Verify if this offset corresponds to a sensitive API entry point (e.g., LdrLoadDll, NtCreateThread).".to_string(),
+                                recommended_action: "Follow the JMP target to see if it points to unbacked/private memory.".to_string(),
                             });
-                            break; // Avoid spamming for every JMP in legitimate code
                         }
                     }
                 }
@@ -48,38 +47,5 @@ impl HookEngine {
         }
 
         findings
-    }
-
-    fn read_process_memory(pid: u32, address: usize, buffer: &mut [u8]) -> Result<()> {
-        unsafe {
-            let handle = OpenProcess(PROCESS_VM_READ, 0, pid);
-            if handle == 0 {
-                return Err(crate::core::errors::ProcessVisionError::ProcessOpenError(
-                    pid,
-                    GetLastError(),
-                ));
-            }
-
-            let mut bytes_read = 0;
-            let success = ReadProcessMemory(
-                handle,
-                address as *const _,
-                buffer.as_mut_ptr() as *mut _,
-                buffer.len(),
-                &mut bytes_read,
-            );
-
-            CloseHandle(handle);
-
-            if success != 0 {
-                Ok(())
-            } else {
-                Err(crate::core::errors::ProcessVisionError::MemoryReadError(
-                    pid,
-                    address,
-                    GetLastError(),
-                ))
-            }
-        }
     }
 }
